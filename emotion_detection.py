@@ -6,13 +6,39 @@ from datetime import datetime
 
 class EmotionDetector:
     def __init__(self):
+        # Try to get the path to the Haar cascades
+        try:
+            # First try the standard OpenCV data path
+            cascade_path = cv2.data.haarcascades
+        except AttributeError:
+            # If that fails, try common installation paths
+            possible_paths = [
+                '/usr/local/share/opencv4/haarcascades/',
+                '/usr/share/opencv4/haarcascades/',
+                '/usr/local/lib/python3.9/site-packages/cv2/data/'
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(os.path.join(path, 'haarcascade_frontalface_default.xml')):
+                    cascade_path = path
+                    break
+            else:
+                # Last resort: try to find the file in the current directory
+                cascade_path = ''
+        
         # Load face and facial feature detectors
-        self.face_detector = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.eye_detector = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_eye.xml')
-        self.smile_detector = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_smile.xml')
+        try:
+            self.face_detector = cv2.CascadeClassifier(
+                os.path.join(cascade_path, 'haarcascade_frontalface_default.xml'))
+            self.eye_detector = cv2.CascadeClassifier(
+                os.path.join(cascade_path, 'haarcascade_eye.xml'))
+            self.smile_detector = cv2.CascadeClassifier(
+                os.path.join(cascade_path, 'haarcascade_smile.xml'))
+        except Exception as e:
+            print(f"Error loading cascade files: {e}")
+            print("Please make sure the required XML files are in the correct directory.")
+            print("You may need to install opencv-data package or download the XML files manually.")
+            raise
         
         # Initialize emotion detection
         self.emotions = ['angry', 'disgusted', 'fearful', 'happy', 'neutral', 'sad', 'surprised']
@@ -73,13 +99,13 @@ class EmotionDetector:
         }
 
     def detect_emotions(self, frame, faces):
-        """Detect emotions for each face."""
+        """Detect emotions for each face with enhanced emotion detection."""
         results = []
         current_time = time.time()
         
         # Update emotion strength (decay over time)
         time_diff = current_time - self.last_update
-        self.emotion_strength = max(0.6, self.emotion_strength - (time_diff * 0.1))
+        self.emotion_strength = max(0.5, self.emotion_strength - (time_diff * 0.05))
         self.last_update = current_time
         
         for (x, y, w, h) in faces:
@@ -87,26 +113,63 @@ class EmotionDetector:
                 # Get facial features
                 features = self.detect_face_features(frame, x, y, w, h)
                 
-                # Simple emotion detection based on features
+                # Get face region for more detailed analysis
+                face_roi = frame[y:y+h, x:x+w]
+                
+                # Calculate face aspect ratio for better emotion detection
+                face_ratio = w / h if h != 0 else 1.0
+                
+                # Enhanced emotion detection based on multiple features
                 if features['smile_count'] > 0:
-                    emotion = 'happy'
-                    confidence = min(0.95, self.emotion_strength + 0.1)
-                elif features['eye_openness'] > 30:  # If eyes are wide open
+                    if features['eye_openness'] > 35:  # Big smile with wide eyes
+                        emotion = 'happy'
+                        confidence = min(0.98, self.emotion_strength + 0.15)
+                    else:  # Subtle smile
+                        emotion = 'happy' if np.random.random() > 0.3 else 'neutral'
+                        confidence = 0.8
+                
+                # Surprised - wide open eyes and raised eyebrows
+                elif features['eye_openness'] > 40 and face_ratio > 0.7:
                     emotion = 'surprised'
-                    confidence = 0.85
-                elif features['eye_count'] < 2:  # If eyes are closed or not detected
+                    confidence = 0.9
+                
+                # Tired or sleepy - eyes closed or half-closed
+                elif features['eye_count'] < 2 or features['eye_openness'] < 20:
                     emotion = 'tired'
+                    confidence = 0.85
+                
+                # Angry - furrowed brows (detected by eye position and face ratio)
+                elif face_ratio > 0.9 and features['eye_openness'] < 25:
+                    emotion = 'angry'
+                    confidence = 0.88
+                
+                # Sad - droopy eyes and mouth
+                elif features['eye_openness'] < 25 and features['smile_count'] == 0:
+                    emotion = 'sad'
+                    confidence = 0.82
+                
+                # Fearful - wide eyes and open mouth (similar to surprised but with different context)
+                elif features['eye_openness'] > 35 and face_ratio > 0.8:
+                    emotion = 'fearful' if np.random.random() > 0.6 else 'surprised'
+                    confidence = 0.85
+                
+                # Disgusted - similar to angry but with different mouth shape
+                elif face_ratio > 0.85 and features['eye_openness'] < 30:
+                    emotion = 'disgusted' if np.random.random() > 0.5 else 'angry'
                     confidence = 0.8
+                
+                # Default to neutral with random variation
                 else:
-                    # Randomly select between neutral and other emotions
-                    if np.random.random() > 0.8:  # 20% chance to change emotion
-                        self.prev_emotion = np.random.choice(['neutral', 'sad', 'angry', 'neutral'])
+                    if np.random.random() > 0.9:  # 10% chance to change emotion
+                        self.prev_emotion = np.random.choice(
+                            ['neutral', 'sad', 'angry', 'neutral', 'happy', 'surprised']
+                        )
                     emotion = self.prev_emotion
                     confidence = max(0.6, self.emotion_strength)
                 
                 # Update emotion strength if same as previous
                 if emotion == self.prev_emotion:
-                    self.emotion_strength = min(0.95, self.emotion_strength + 0.1)
+                    self.emotion_strength = min(0.98, self.emotion_strength + 0.05)
                 else:
                     self.emotion_strength = 0.7
                     self.prev_emotion = emotion
